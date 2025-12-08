@@ -385,7 +385,9 @@ internal class BetterPlayer(
             if (lastPathSegment == null) {
                 lastPathSegment = ""
             }
-            type = Util.inferContentTypeForExtension(lastPathSegment.split(".")[1])
+            val parts = lastPathSegment.split(".")
+            val extension = if (parts.size > 1) parts.last() else ""
+            type = Util.inferContentTypeForExtension(extension)
         } else {
             type = when (formatHint) {
                 FORMAT_SS -> C.CONTENT_TYPE_SS

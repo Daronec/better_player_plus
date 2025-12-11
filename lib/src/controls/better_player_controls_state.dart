@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:better_player_plus/src/controls/better_player_clickable_widget.dart';
 import 'package:better_player_plus/src/core/better_player_utils.dart';
+import 'package:better_player_plus/src/subtitles/better_player_subtitle_style_menu.dart';
 import 'package:collection/collection.dart' show IterableExtension;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -193,14 +194,149 @@ abstract class BetterPlayerControlsState<T extends StatefulWidget> extends State
   }
 
   void _showSubtitlesSelectionWidget() {
-    final subtitles = List.of(betterPlayerController!.betterPlayerSubtitlesSourceList);
-    final noneSubtitlesElementExists =
-        subtitles.firstWhereOrNull((source) => source.type == BetterPlayerSubtitlesSourceType.none) != null;
-    if (!noneSubtitlesElementExists) {
-      subtitles.add(BetterPlayerSubtitlesSource(type: BetterPlayerSubtitlesSourceType.none));
-    }
+    final List<Widget> subtitleRows = [
+      // Add "Off" option
+      _buildSubtitleOffRow(),
+      // Add "Subtitle Style" option (Android only)
+      if (Platform.isAndroid) _buildSubtitleStyleRow(),
+      // Add Android embedded subtitles (if available)
+      if (Platform.isAndroid)
+        ...betterPlayerController!.embeddedSubtitleTracks.map(_buildEmbeddedSubtitleRow),
+      // Add external subtitle rows (excluding "none" as we already have "Off")
+      ...() {
+        final subtitles = List.of(betterPlayerController!.betterPlayerSubtitlesSourceList);
+        final noneSubtitlesElementExists =
+            subtitles.firstWhereOrNull((source) => source.type == BetterPlayerSubtitlesSourceType.none) != null;
+        if (!noneSubtitlesElementExists) {
+          subtitles.add(BetterPlayerSubtitlesSource(type: BetterPlayerSubtitlesSourceType.none));
+        }
+        return subtitles
+            .where((source) => source.type != BetterPlayerSubtitlesSourceType.none)
+            .map(_buildSubtitlesSourceRow);
+      }(),
+    ];
 
-    _showModalBottomSheet(subtitles.map(_buildSubtitlesSourceRow).toList());
+    _showModalBottomSheet(subtitleRows);
+  }
+
+  Widget _buildSubtitleStyleRow() => BetterPlayerMaterialClickableWidget(
+      onTap: () {
+        Navigator.of(context).pop();
+        _showSubtitleStyleMenu();
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        child: Row(
+          children: [
+            const SizedBox(width: 16),
+            Icon(Icons.tune, color: betterPlayerControlsConfiguration.overflowModalTextColor),
+            const SizedBox(width: 16),
+            Text(
+              'Subtitle Style',
+              style: _getOverflowMenuElementTextStyle(false),
+            ),
+          ],
+        ),
+      ),
+    );
+
+  void _showSubtitleStyleMenu() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => BetterPlayerSubtitleStyleMenu(
+        controller: betterPlayerController!,
+      ),
+    );
+  }
+
+  Widget _buildSubtitleOffRow() {
+    final bool isSelected = Platform.isAndroid
+        ? betterPlayerController!.selectedSubtitleId == null
+        : betterPlayerController!.betterPlayerSubtitlesSource?.type == BetterPlayerSubtitlesSourceType.none;
+
+    return BetterPlayerMaterialClickableWidget(
+      onTap: () {
+        Navigator.of(context).pop();
+        if (Platform.isAndroid) {
+          betterPlayerController!.disableEmbeddedSubtitles();
+        } else {
+          betterPlayerController!.setupSubtitleSource(
+            BetterPlayerSubtitlesSource(type: BetterPlayerSubtitlesSourceType.none),
+          );
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        child: Row(
+          children: [
+            SizedBox(width: isSelected ? 8 : 16),
+            Visibility(
+              visible: isSelected,
+              child: Icon(Icons.check_outlined, color: betterPlayerControlsConfiguration.overflowModalTextColor),
+            ),
+            const SizedBox(width: 16),
+            Text(
+              betterPlayerController!.translations.generalNone,
+              style: _getOverflowMenuElementTextStyle(isSelected),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmbeddedSubtitleRow(Map<String, dynamic> track) {
+    final trackId = track['id'] as String? ?? '';
+    final isSelected = betterPlayerController!.selectedSubtitleId == trackId;
+    final label = track['label'] as String? ?? track['language'] as String? ?? 'Subtitle';
+    final isExternal = track['isExternal'] == true;
+    final groupIndex = track['groupIndex'] as int? ?? 0;
+    final trackIndex = track['trackIndex'] as int? ?? 0;
+
+    return BetterPlayerMaterialClickableWidget(
+      onTap: () async {
+        Navigator.of(context).pop();
+        await betterPlayerController!.selectEmbeddedSubtitleTrack(
+          groupIndex,
+          trackIndex,
+          trackId: trackId,
+        );
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        child: Row(
+          children: [
+            SizedBox(width: isSelected ? 8 : 16),
+            Visibility(
+              visible: isSelected,
+              child: Icon(Icons.check_outlined, color: betterPlayerControlsConfiguration.overflowModalTextColor),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: _getOverflowMenuElementTextStyle(isSelected),
+                  ),
+                  if (isExternal)
+                    Text(
+                      'External',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: betterPlayerControlsConfiguration.overflowModalTextColor.withOpacity(0.7),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSubtitlesSourceRow(BetterPlayerSubtitlesSource subtitlesSource) {

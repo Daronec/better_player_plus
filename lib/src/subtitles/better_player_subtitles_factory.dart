@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:better_player_plus/src/core/better_player_utils.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_isolate_parser.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_parser.dart';
 import 'package:better_player_plus/src/subtitles/better_player_subtitle.dart';
 
 class BetterPlayerSubtitlesFactory {
@@ -77,6 +80,13 @@ class BetterPlayerSubtitlesFactory {
   }
 
   static List<BetterPlayerSubtitle> _parseString(String value) {
+    // Check if it's an ASS/SSA file
+    if (_isAssFile(value)) {
+      // ASS files are handled separately via AssParser
+      // Return empty list here - ASS will be handled by AssRenderer
+      return [];
+    }
+
     List<String> components = value.split('\r\n\r\n');
     if (components.length == 1) {
       components = value.split('\n\n');
@@ -101,5 +111,40 @@ class BetterPlayerSubtitlesFactory {
     }
 
     return subtitlesObj;
+  }
+
+  /// Check if content is ASS/SSA format
+  static bool _isAssFile(String content) =>
+      content.contains('[Script Info]') ||
+      content.contains('[V4+ Styles]') ||
+      content.contains('[V4 Styles]') ||
+      content.contains('[Events]');
+
+  /// Parse ASS file and return parse result
+  static AssParseResult? parseAssFile(String content) {
+    if (!_isAssFile(content)) {
+      return null;
+    }
+    try {
+      return AssParser.parse(content);
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to parse ASS file: $e');
+      return null;
+    }
+  }
+
+  /// Parse ASS file in isolate (async, non-blocking)
+  static Future<AssParseResult?> parseAssFileAsync(String content) async {
+    if (!_isAssFile(content)) {
+      return null;
+    }
+    try {
+      // Use isolate parser for heavy parsing
+      return await AssIsolateParser.parseAsync(content);
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to parse ASS file in isolate: $e');
+      // Fallback to synchronous parsing
+      return parseAssFile(content);
+    }
   }
 }

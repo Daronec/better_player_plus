@@ -76,6 +76,9 @@ import kotlin.math.max
 import kotlin.math.min
 import androidx.core.net.toUri
 import androidx.media3.common.text.CueGroup
+import androidx.media3.extractor.mkv.MatroskaExtractor
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.media.video.music.player.ExoPlayerSubtitlePlugin
 
 @UnstableApi
 internal class BetterPlayer(
@@ -115,10 +118,25 @@ internal class BetterPlayer(
             this.customDefaultLoadControl.bufferForPlaybackAfterRebufferMs
         )
         loadControl = loadBuilder.build()
+        // Create ExoPlayer with Matroska extractor support so MKV embedded subtitles are parsed correctly
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setMatroskaExtractorFlags(MatroskaExtractor.FLAG_SUPPRESS_CODEC_IDENTIFICATION)
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(context)
+            .setExtractorsFactory(extractorsFactory)
+
         exoPlayer = ExoPlayer.Builder(context)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
+            .setMediaSourceFactory(mediaSourceFactory)
             .build()
+
+        // Provide the created ExoPlayer and TrackSelector to the subtitle plugin (if present)
+        try {
+            ExoPlayerSubtitlePlugin.instance?.setExoPlayer(exoPlayer!!, trackSelector)
+        } catch (ignored: Exception) {
+            // Ignore if plugin not available at runtime
+        }
         workManager = WorkManager.getInstance(context)
         workerObserverMap = HashMap()
         setupVideoPlayer(eventChannel, textureEntry, result)
@@ -205,6 +223,11 @@ internal class BetterPlayer(
             exoPlayer?.setMediaSource(mediaSource)
         }
         exoPlayer?.prepare()
+
+        // Notify subtitle plugin about video path (for embedded subtitle scan)
+        try {
+            ExoPlayerSubtitlePlugin.instance?.setVideoPath(dataSource)
+        } catch (_: Exception) {}
         result.success(null)
     }
 
@@ -780,7 +803,8 @@ internal class BetterPlayer(
                             "label" to format.label,
                             "language" to format.language,
                             "mimeType" to format.sampleMimeType,
-                            "isSelected" to isSelected
+                            "isSelected" to isSelected,
+                            "isExternal" to (format.id?.startsWith("external_") == true)
                         )
                         tracks.add(trackInfo)
                     }
@@ -845,6 +869,41 @@ internal class BetterPlayer(
         } catch (e: Exception) {
             Log.e(TAG, "Error disabling subtitles: ${e.message}")
             return false
+        }
+    }
+
+    /**
+     * Add external subtitle track to the current media item.
+     */
+    fun addExternalSubtitle(
+        url: String,
+        language: String?,
+        label: String?,
+        mimeType: String?
+    ) {
+        val player = exoPlayer ?: return
+
+        try {
+            val mediaItem = player.currentMediaItem ?: return
+            val builder = mediaItem.buildUpon()
+
+            val subtitleConfiguration = MediaItem.SubtitleConfiguration.Builder(Uri.parse(url))
+                .setMimeType(mimeType ?: "text/vtt")
+                .setLanguage(language)
+                .setLabel(label ?: "External Subtitle")
+                .setId("external_${System.currentTimeMillis()}")
+                .build()
+
+            val existingSubtitles = mediaItem.subtitleConfigurations.toMutableList()
+            existingSubtitles.add(subtitleConfiguration)
+
+            builder.setSubtitleConfigurations(existingSubtitles)
+            player.replaceMediaItem(player.currentMediaItemIndex, builder.build())
+            player.prepare()
+
+            Log.d(TAG, "External subtitle added: $url")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to add external subtitles", e)
         }
     }
 

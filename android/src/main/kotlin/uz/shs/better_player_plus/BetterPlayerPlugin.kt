@@ -275,6 +275,19 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 result.success(null)
             }
 
+            "addExternalSubtitle" -> {
+                val url = call.argument<String>("url")
+                val language = call.argument<String>("language")
+                val label = call.argument<String>("label")
+                val mimeType = call.argument<String>("mimeType")
+                if (url == null) {
+                    result.error("INVALID_URL", "Subtitle URL is required", null)
+                    return
+                }
+                player.addExternalSubtitle(url, language, label, mimeType)
+                result.success(null)
+            }
+
             DISPOSE_METHOD -> {
                 dispose(player, textureId)
                 result.success(null)

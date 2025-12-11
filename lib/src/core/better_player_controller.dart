@@ -1,11 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:better_player_plus/src/configuration/better_player_controller_event.dart';
 import 'package:better_player_plus/src/core/better_player_utils.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_cache.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_models.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_renderer.dart';
 import 'package:better_player_plus/src/subtitles/better_player_subtitle.dart';
+import 'package:better_player_plus/src/subtitles/better_player_subtitle_auto_selector.dart';
+import 'package:better_player_plus/src/subtitles/better_player_subtitle_overlay.dart';
+import 'package:better_player_plus/src/subtitles/better_player_subtitle_preferences.dart';
 import 'package:better_player_plus/src/subtitles/better_player_subtitles_factory.dart';
+import 'package:better_player_plus/src/subtitles/exoplayer_subtitle_service.dart';
 import 'package:better_player_plus/src/video_player/video_player.dart';
 import 'package:better_player_plus/src/video_player/video_player_platform_interface.dart';
 import 'package:collection/collection.dart' show IterableExtension;
@@ -91,6 +99,62 @@ class BetterPlayerController {
   ///Currently used subtitles source.
   BetterPlayerSubtitlesSource? get betterPlayerSubtitlesSource => _betterPlayerSubtitlesSource;
 
+  ///ExoPlayer subtitle service for Android embedded subtitles
+  final ExoPlayerSubtitleService _exoSubtitleService = ExoPlayerSubtitleService.instance;
+
+  ///List of embedded subtitle tracks (Android only)
+  List<Map<String, dynamic>> _embeddedSubtitleTracks = [];
+
+  ///List of embedded subtitle tracks (Android only)
+  List<Map<String, dynamic>> get embeddedSubtitleTracks => _embeddedSubtitleTracks;
+
+  ///Currently selected subtitle track ID
+  String? _selectedSubtitleId;
+
+  ///Currently selected subtitle track ID
+  String? get selectedSubtitleId => _selectedSubtitleId;
+
+  ///Stream of subtitle cues from Android ExoPlayer
+  Stream<String> get subtitleCuesStream => _exoSubtitleService.subtitleCues;
+
+  ///Current subtitle text from cue events (Android only)
+  String _currentSubtitleText = "";
+
+  ///Current subtitle text from cue events (Android only)
+  String get currentSubtitleText => _currentSubtitleText;
+
+  ///ASS renderer for advanced subtitle rendering
+  AssRenderer? _assRenderer;
+
+  ///ASS renderer for advanced subtitle rendering
+  AssRenderer? get assRenderer => _assRenderer;
+
+  ///Current ASS rendered lines
+  List<RenderedAssLine> _assRenderedLines = [];
+
+  ///Current ASS rendered lines
+  List<RenderedAssLine> get assRenderedLines => _assRenderedLines;
+
+  ///ASS image cache for hardware acceleration
+  final AssImageCache _assImageCache = AssImageCache();
+
+  ///ASS image cache for hardware acceleration
+  AssImageCache get assImageCache => _assImageCache;
+
+  ///Subtitle overlay style (Android only)
+  BetterPlayerSubtitleOverlayStyle _subtitleOverlayStyle = const BetterPlayerSubtitleOverlayStyle();
+
+  ///Subtitle overlay style (Android only)
+  BetterPlayerSubtitleOverlayStyle get subtitleOverlayStyle => _subtitleOverlayStyle;
+
+  ///Update subtitle overlay style (Android only)
+  void updateSubtitleOverlayStyle(BetterPlayerSubtitleOverlayStyle style) {
+    _subtitleOverlayStyle = style;
+    // Save to preferences
+    BetterPlayerSubtitlePreferences.saveStyle(style);
+    _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+  }
+
   ///Subtitles lines for current data source.
   List<BetterPlayerSubtitle> subtitlesLines = [];
 
@@ -170,6 +234,9 @@ class BetterPlayerController {
 
   ///StreamSubscription for VideoEvent listener
   StreamSubscription<VideoEvent>? _videoEventStreamSubscription;
+
+  ///StreamSubscription for subtitle cue events (Android only)
+  StreamSubscription<String>? _subtitleCueSubscription;
 
   ///Are controls always visible
   bool _controlsAlwaysVisible = false;
@@ -323,6 +390,196 @@ class BetterPlayerController {
     }
   }
 
+  ///Get embedded subtitles from Android ExoPlayer (Android only)
+  Future<List<Map<String, dynamic>>> getEmbeddedSubtitles() async {
+    if (!Platform.isAndroid) {
+      return [];
+    }
+    try {
+      _embeddedSubtitleTracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      return _embeddedSubtitleTracks;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  ///Merge and sort subtitle tracks (internal + external)
+  List<Map<String, dynamic>> _mergeSubtitleTracks(List<Map<String, dynamic>> tracks) {
+    final internal = <Map<String, dynamic>>[];
+    final external = <Map<String, dynamic>>[];
+
+    for (final track in tracks) {
+      if (track['isExternal'] == true) {
+        external.add(track);
+      } else {
+        internal.add(track);
+      }
+    }
+
+    return [
+      ...internal,
+      ...external,
+    ];
+  }
+
+  ///Refresh subtitle tracks from Android ExoPlayer
+  Future<void> refreshSubtitleTracks() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      final tracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      _embeddedSubtitleTracks = _mergeSubtitleTracks(tracks);
+      
+      // Auto-select subtitle track if none is selected
+      if (_selectedSubtitleId == null && _embeddedSubtitleTracks.isNotEmpty) {
+        await _autoSelectSubtitleTrack();
+      }
+      
+      _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to refresh subtitle tracks: $e');
+    }
+  }
+
+  /// Apply saved track selection or auto-select
+  Future<void> _applySavedTrackSelection() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    final savedTrackId = await BetterPlayerSubtitlePreferences.loadSelectedTrack();
+    if (savedTrackId != null) {
+      final track = _embeddedSubtitleTracks.firstWhereOrNull(
+        (t) => t['id'] == savedTrackId,
+      );
+      if (track != null) {
+        await selectEmbeddedSubtitleTrack(
+          track['groupIndex'] as int,
+          track['trackIndex'] as int,
+          trackId: track['id'] as String,
+        );
+        return;
+      }
+    }
+    // If no saved track, try auto-selection
+    await _autoSelectSubtitleTrack();
+  }
+
+  ///Automatically select the best subtitle track
+  Future<void> _autoSelectSubtitleTrack() async {
+    if (!Platform.isAndroid || _embeddedSubtitleTracks.isEmpty) {
+      return;
+    }
+    try {
+      final savedTrackId = await BetterPlayerSubtitlePreferences.loadSelectedTrack();
+      final autoTrack = BetterPlayerSubtitleAutoSelector.selectAutoTrack(
+        _embeddedSubtitleTracks,
+        savedTrackId,
+      );
+      
+      if (autoTrack != null) {
+        final groupIndex = autoTrack['groupIndex'] as int? ?? 0;
+        final trackIndex = autoTrack['trackIndex'] as int? ?? 0;
+        final trackId = autoTrack['id'] as String?;
+        
+        await selectEmbeddedSubtitleTrack(
+          groupIndex,
+          trackIndex,
+          trackId: trackId,
+        );
+      }
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to auto-select subtitle track: $e');
+    }
+  }
+
+  ///Set selected subtitle track ID
+  void setSelectedSubtitle(String? id) {
+    _selectedSubtitleId = id;
+    _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+  }
+
+  ///Select embedded subtitle track (Android only)
+  Future<void> selectEmbeddedSubtitleTrack(int group, int track, {String? trackId}) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      await _exoSubtitleService.selectSubtitle(group, track);
+      final selectedId = trackId ?? "${group}_$track";
+      setSelectedSubtitle(selectedId);
+      // Save to preferences
+      await BetterPlayerSubtitlePreferences.saveSelectedTrack(selectedId);
+      _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+      _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to select embedded subtitle: $e');
+    }
+  }
+
+  ///Disable embedded subtitles (Android only)
+  Future<void> disableEmbeddedSubtitles() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      await _exoSubtitleService.disableSubtitles();
+      setSelectedSubtitle(null);
+      // Save to preferences
+      await BetterPlayerSubtitlePreferences.saveSelectedTrack(null);
+      _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+      _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to disable embedded subtitles: $e');
+    }
+  }
+
+  ///Add external subtitle track (Android only)
+  Future<void> addExternalSubtitle({
+    required String url,
+    String? language,
+    String? label,
+    String? mimeType,
+  }) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      // Determine MIME type from URL if not provided
+      String? detectedMimeType = mimeType;
+      if (detectedMimeType == null) {
+        final urlLower = url.toLowerCase();
+        if (urlLower.endsWith('.srt')) {
+          detectedMimeType = 'application/x-subrip';
+        } else if (urlLower.endsWith('.vtt')) {
+          detectedMimeType = 'text/vtt';
+        } else if (urlLower.endsWith('.ass') || urlLower.endsWith('.ssa')) {
+          detectedMimeType = 'text/x-ssa';
+        } else {
+          detectedMimeType = 'text/vtt'; // default
+        }
+      }
+
+      // Use ExoPlayerSubtitleService to add external subtitle
+      // Note: textureId is private, so we rely on fallback without textureId
+      await _exoSubtitleService.addExternalSubtitle(
+        url: url,
+        language: language,
+        label: label,
+        mimeType: detectedMimeType,
+      );
+
+      // Refresh subtitle tracks after adding (wait a bit for tracks to be available)
+      Future.delayed(const Duration(milliseconds: 500), () async {
+        await refreshSubtitleTracks();
+      });
+
+      _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+    } catch (e) {
+      BetterPlayerUtils.log('Failed to add external subtitle: $e');
+    }
+  }
+
   ///Setup subtitles to be displayed from given subtitle source.
   ///If subtitles source is segmented then don't load videos at start. Videos
   ///will load with just in time policy.
@@ -331,11 +588,65 @@ class BetterPlayerController {
     subtitlesLines.clear();
     _asmsSegmentsLoaded.clear();
     _asmsSegmentsLoading = false;
+    _assRenderer = null; // Reset ASS renderer
 
     if (subtitlesSource.type != BetterPlayerSubtitlesSourceType.none) {
       if (subtitlesSource.asmsIsSegmented ?? false) {
         return;
       }
+
+      // Try to parse as ASS file first
+      String? content;
+      if (subtitlesSource.type == BetterPlayerSubtitlesSourceType.file && subtitlesSource.urls != null) {
+        try {
+          final file = File(subtitlesSource.urls!.first!);
+          if (file.existsSync()) {
+            content = await file.readAsString();
+          }
+        } catch (e) {
+          BetterPlayerUtils.log('Failed to read subtitle file: $e');
+        }
+      } else if (subtitlesSource.type == BetterPlayerSubtitlesSourceType.memory && subtitlesSource.content != null) {
+        content = subtitlesSource.content;
+      } else if (subtitlesSource.type == BetterPlayerSubtitlesSourceType.network && subtitlesSource.urls != null) {
+        try {
+          final client = HttpClient();
+          final request = await client.getUrl(Uri.parse(subtitlesSource.urls!.first!));
+          subtitlesSource.headers?.keys.forEach((key) {
+            final value = subtitlesSource.headers![key];
+            if (value != null) {
+              request.headers.add(key, value);
+            }
+          });
+          final response = await request.close();
+          content = await response.transform(const Utf8Decoder()).join();
+          client.close();
+        } catch (e) {
+          BetterPlayerUtils.log('Failed to load subtitle from network: $e');
+        }
+      }
+
+      if (content != null) {
+        // Check if it's ASS format - parse in isolate for better performance
+        final assResult = await BetterPlayerSubtitlesFactory.parseAssFileAsync(content);
+        if (assResult != null && assResult.events.isNotEmpty) {
+          // Setup ASS renderer
+          final videoSize = videoPlayerController?.value.size ?? const Size(1920, 1080);
+          _assRenderer = AssRenderer(
+            events: assResult.events,
+            styles: assResult.styles,
+            videoWidth: videoSize.width,
+            videoHeight: videoSize.height,
+          );
+          _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+          if (!_disposed && !sourceInitialize) {
+            _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+          }
+          return;
+        }
+      }
+
+      // Fallback to regular subtitle parsing
       final subtitlesParsed = await BetterPlayerSubtitlesFactory.parseSubtitles(subtitlesSource);
       subtitlesLines.addAll(subtitlesParsed);
     }
@@ -507,6 +818,33 @@ class BetterPlayerController {
     }
 
     _videoEventStreamSubscription = videoPlayerController?.videoEventStreamController.stream.listen(_handleVideoEvent);
+
+    // Initialize Android embedded subtitles
+    if (Platform.isAndroid) {
+      try {
+        // Load saved style from preferences
+        final savedStyle = await BetterPlayerSubtitlePreferences.loadStyle();
+        if (savedStyle != null) {
+          _subtitleOverlayStyle = savedStyle;
+        }
+
+        _exoSubtitleService.startCueListener();
+        // Listen to subtitle cue events
+        unawaited(_subtitleCueSubscription?.cancel());
+        _subtitleCueSubscription = _exoSubtitleService.subtitleCues.listen((text) {
+          _currentSubtitleText = text;
+          _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+        });
+        // Wait a bit for tracks to be available after prepare
+        unawaited(Future.delayed(const Duration(milliseconds: 500), () async {
+          await refreshSubtitleTracks();
+          // Load and apply saved track selection
+          await _applySavedTrackSelection();
+        }));
+      } catch (e) {
+        // Ignore errors if service not available
+      }
+    }
 
     final fullScreenByDefault = betterPlayerConfiguration.fullScreenByDefault;
     if (betterPlayerConfiguration.autoPlay) {
@@ -813,6 +1151,12 @@ class BetterPlayerController {
       }
 
       _nextVideoTimer = Timer.periodic(const Duration(milliseconds: 1000), (timer) async {
+        // Update ASS rendered lines if ASS renderer is active
+        if (_assRenderer != null && videoPlayerController != null) {
+          final position = videoPlayerController!.value.position;
+          _assRenderedLines = _assRenderer!.render(position);
+          _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+        }
         if (_nextVideoTime == 1) {
           timer.cancel();
           _nextVideoTimer = null;
@@ -1220,6 +1564,11 @@ class BetterPlayerController {
       _nextVideoTimeStreamController.close();
       _controlsVisibilityStreamController.close();
       _videoEventStreamSubscription?.cancel();
+      _subtitleCueSubscription?.cancel();
+      if (Platform.isAndroid) {
+        _exoSubtitleService.stopCueListener();
+      }
+      _assImageCache.dispose();
       _disposed = true;
       _controllerEventStreamController.close();
 

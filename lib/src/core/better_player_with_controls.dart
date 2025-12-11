@@ -6,6 +6,8 @@ import 'package:better_player_plus/src/configuration/better_player_controller_ev
 import 'package:better_player_plus/src/controls/better_player_cupertino_controls.dart';
 import 'package:better_player_plus/src/controls/better_player_material_controls.dart';
 import 'package:better_player_plus/src/core/better_player_utils.dart';
+import 'package:better_player_plus/src/subtitles/ass/ass_overlay.dart';
+import 'package:better_player_plus/src/subtitles/better_player_subtitle_overlay.dart';
 import 'package:better_player_plus/src/subtitles/better_player_subtitles_drawer.dart';
 import 'package:better_player_plus/src/video_player/video_player.dart';
 import 'package:flutter/material.dart';
@@ -128,6 +130,21 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
             subtitles: betterPlayerController.subtitlesLines,
             playerVisibilityStream: playerVisibilityStreamController.stream,
           ),
+          // ASS subtitle overlay (if ASS renderer is active)
+          if (betterPlayerController.assRenderer != null && betterPlayerController.assRenderedLines.isNotEmpty)
+            AssOverlay(
+              lines: betterPlayerController.assRenderedLines,
+              videoSize: betterPlayerController.videoPlayerController?.value.size ?? const Size(1920, 1080),
+              cache: betterPlayerController.assImageCache,
+            ),
+          // Android subtitle overlay from ExoPlayer cue events (fallback for non-ASS)
+          if (Platform.isAndroid && 
+              betterPlayerController.assRenderer == null &&
+              betterPlayerController.currentSubtitleText.isNotEmpty)
+            BetterPlayerSubtitleOverlay(
+              text: betterPlayerController.currentSubtitleText,
+              style: betterPlayerController.subtitleOverlayStyle,
+            ),
           if (!placeholderOnTop) _buildPlaceholder(betterPlayerController),
           _buildControls(context, betterPlayerController),
         ],

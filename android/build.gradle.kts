@@ -8,7 +8,7 @@ version = "1.0-SNAPSHOT"
 
 val lifecycleVersion = "2.9.4"
 val annotationVersion = "1.9.1"
-val media3Version = "1.8.0"
+val media3Version = "1.4.1"
 val workVersion = "2.10.5"
 
 buildscript {
@@ -62,6 +62,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-dash:$media3Version")
     implementation("androidx.media3:media3-datasource-cronet:$media3Version")
     implementation("androidx.media3:media3-exoplayer-smoothstreaming:$media3Version")
+    implementation("androidx.media3:media3-extractor:$media3Version")
+    implementation("androidx.media3:media3-common:$media3Version")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:$lifecycleVersion")
     implementation("androidx.lifecycle:lifecycle-common:$lifecycleVersion")

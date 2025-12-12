@@ -396,7 +396,14 @@ class BetterPlayerController {
       return [];
     }
     try {
-      _embeddedSubtitleTracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      // Use VideoPlayerController if available, otherwise fallback to ExoPlayerSubtitleService
+      List<Map<String, dynamic>> tracks;
+      if (videoPlayerController != null) {
+        tracks = await videoPlayerController!.getSubtitleTracks();
+      } else {
+        tracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      }
+      _embeddedSubtitleTracks = _mergeSubtitleTracks(tracks);
       return _embeddedSubtitleTracks;
     } catch (e) {
       return [];
@@ -428,7 +435,13 @@ class BetterPlayerController {
       return;
     }
     try {
-      final tracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      // Use VideoPlayerController if available, otherwise fallback to ExoPlayerSubtitleService
+      List<Map<String, dynamic>> tracks;
+      if (videoPlayerController != null) {
+        tracks = await videoPlayerController!.getSubtitleTracks();
+      } else {
+        tracks = await _exoSubtitleService.getEmbeddedSubtitles();
+      }
       _embeddedSubtitleTracks = _mergeSubtitleTracks(tracks);
       
       // Auto-select subtitle track if none is selected
@@ -505,13 +518,21 @@ class BetterPlayerController {
       return;
     }
     try {
-      await _exoSubtitleService.selectSubtitle(group, track);
-      final selectedId = trackId ?? "${group}_$track";
-      setSelectedSubtitle(selectedId);
-      // Save to preferences
-      await BetterPlayerSubtitlePreferences.saveSelectedTrack(selectedId);
-      _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
-      _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+      // Use VideoPlayerController if available, otherwise fallback to ExoPlayerSubtitleService
+      bool success;
+      if (videoPlayerController != null) {
+        success = await videoPlayerController!.setSubtitleTrack(group, track);
+      } else {
+        success = await _exoSubtitleService.selectSubtitle(group, track);
+      }
+      if (success) {
+        final selectedId = trackId ?? "${group}_$track";
+        setSelectedSubtitle(selectedId);
+        // Save to preferences
+        await BetterPlayerSubtitlePreferences.saveSelectedTrack(selectedId);
+        _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+        _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+      }
     } catch (e) {
       BetterPlayerUtils.log('Failed to select embedded subtitle: $e');
     }
@@ -523,12 +544,20 @@ class BetterPlayerController {
       return;
     }
     try {
-      await _exoSubtitleService.disableSubtitles();
-      setSelectedSubtitle(null);
-      // Save to preferences
-      await BetterPlayerSubtitlePreferences.saveSelectedTrack(null);
-      _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
-      _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+      // Use VideoPlayerController if available, otherwise fallback to ExoPlayerSubtitleService
+      bool success;
+      if (videoPlayerController != null) {
+        success = await videoPlayerController!.disableSubtitles();
+      } else {
+        success = await _exoSubtitleService.disableSubtitles();
+      }
+      if (success) {
+        setSelectedSubtitle(null);
+        // Save to preferences
+        await BetterPlayerSubtitlePreferences.saveSelectedTrack(null);
+        _postEvent(BetterPlayerEvent(BetterPlayerEventType.changedSubtitles));
+        _postControllerEvent(BetterPlayerControllerEvent.changeSubtitles);
+      }
     } catch (e) {
       BetterPlayerUtils.log('Failed to disable embedded subtitles: $e');
     }

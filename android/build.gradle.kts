@@ -8,30 +8,25 @@ version = "1.0-SNAPSHOT"
 
 val lifecycleVersion = "2.9.4"
 val annotationVersion = "1.9.1"
-val media3Version = "1.4.1"
+val media3Version = "1.8.0"
 val workVersion = "2.10.5"
-
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath("com.android.tools.build:gradle:8.13.0")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.20")
-    }
-}
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
 
 android {
     namespace = "uz.shs.better_player_plus"
     compileSdk = 36
+
+    configurations.all {
+        resolutionStrategy {
+            // Принудительно используем единую версию Media3 для всех модулей
+            force("androidx.media3:media3-exoplayer:$media3Version")
+            force("androidx.media3:media3-extractor:$media3Version")
+            force("androidx.media3:media3-common:$media3Version")
+            force("androidx.media3:media3-datasource:$media3Version")
+            force("androidx.media3:media3-ui:$media3Version")
+            force("androidx.media3:media3-session:$media3Version")
+            force("androidx.media3:media3-container:$media3Version")
+        }
+    }
 
     defaultConfig {
         minSdk = 24
@@ -53,17 +48,21 @@ android {
 }
 
 dependencies {
+    // Required for MediaSessionCompat, MediaMetadataCompat, PlaybackStateCompat
     implementation("androidx.media:media:1.7.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
 
-    implementation("androidx.media3:media3-ui:$media3Version")
-    implementation("androidx.media3:media3-session:$media3Version")
+    // Media3 full modern stack (single version)
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-hls:$media3Version")
     implementation("androidx.media3:media3-exoplayer-dash:$media3Version")
-    implementation("androidx.media3:media3-datasource-cronet:$media3Version")
     implementation("androidx.media3:media3-exoplayer-smoothstreaming:$media3Version")
+    implementation("androidx.media3:media3-datasource-cronet:$media3Version")
     implementation("androidx.media3:media3-extractor:$media3Version")
+    implementation("androidx.media3:media3-ui:$media3Version")
+    implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-common:$media3Version")
+    implementation("androidx.media3:media3-container:$media3Version")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:$lifecycleVersion")
     implementation("androidx.lifecycle:lifecycle-common:$lifecycleVersion")

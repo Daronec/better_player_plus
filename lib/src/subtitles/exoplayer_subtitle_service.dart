@@ -2,14 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
-/// Канал общается с Android ExoPlayerSubtitlePlugin
-const _channel = MethodChannel("com.media.video.music.player/subtitles");
-
 /// Канал для вызова методов BetterPlayer напрямую
 const _betterPlayerChannel = MethodChannel("better_player_channel");
 
-/// Поток событий субтитров
-const _eventChannel = EventChannel("com.media.video.music.player/subtitles_events");
+/// Поток событий субтитров через BetterPlayer
+const _eventChannel = EventChannel("better_player_channel/videoEvents");
 
 class ExoPlayerSubtitleService {
   ExoPlayerSubtitleService._internal();
@@ -29,29 +26,42 @@ class ExoPlayerSubtitleService {
     return _subtitleCuesStream!;
   }
 
-  Future<List<Map<String, dynamic>>> getEmbeddedSubtitles() async {
+  Future<List<Map<String, dynamic>>> getEmbeddedSubtitles({int? textureId}) async {
     try {
-      final result = await _channel.invokeMethod("getEmbeddedSubtitles");
+      final result = await _betterPlayerChannel.invokeMethod(
+        "getSubtitleTracks",
+        {"textureId": textureId},
+      );
+      if (result == null) {
+        return [];
+      }
       return (result as List).cast<Map<String, dynamic>>();
     } catch (e) {
       return [];
     }
   }
 
-  Future<bool> selectSubtitle(int group, int track) async {
+  Future<bool> selectSubtitle(int group, int track, {int? textureId}) async {
     try {
-      return await _channel.invokeMethod("selectSubtitle", {
-        "group": group,
-        "track": track,
-      }) as bool? ?? false;
+      return await _betterPlayerChannel.invokeMethod(
+        "setSubtitleTrack",
+        {
+          "textureId": textureId,
+          "groupIndex": group,
+          "trackIndex": track,
+        },
+      ) as bool? ?? false;
     } catch (e) {
       return false;
     }
   }
 
-  Future<bool> disableSubtitles() async {
+  Future<bool> disableSubtitles({int? textureId}) async {
     try {
-      return await _channel.invokeMethod("disableSubtitles") as bool? ?? false;
+      return await _betterPlayerChannel.invokeMethod(
+        "disableSubtitles",
+        {"textureId": textureId},
+      ) as bool? ?? false;
     } catch (e) {
       return false;
     }
@@ -75,8 +85,8 @@ class ExoPlayerSubtitleService {
           "mimeType": mimeType,
         });
       } else {
-        // Fallback: try ExoPlayerSubtitlePlugin channel (may not work without textureId)
-        await _channel.invokeMethod("addExternalSubtitle", {
+        // Fallback: try without textureId (may not work)
+        await _betterPlayerChannel.invokeMethod("addExternalSubtitle", {
           "url": url,
           "language": language,
           "label": label,

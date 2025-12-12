@@ -76,9 +76,7 @@ import kotlin.math.max
 import kotlin.math.min
 import androidx.core.net.toUri
 import androidx.media3.common.text.CueGroup
-import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.media.video.music.player.ExoPlayerSubtitlePlugin
 
 @UnstableApi
 internal class BetterPlayer(
@@ -118,12 +116,9 @@ internal class BetterPlayer(
             this.customDefaultLoadControl.bufferForPlaybackAfterRebufferMs
         )
         loadControl = loadBuilder.build()
-        // Create ExoPlayer with Matroska extractor support so MKV embedded subtitles are parsed correctly
-        val extractorsFactory = DefaultExtractorsFactory()
-            .setMatroskaExtractorFlags(MatroskaExtractor.FLAG_SUPPRESS_CODEC_IDENTIFICATION)
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(context)
-            .setExtractorsFactory(extractorsFactory)
+        // Build mediaSourceFactory in a backwards-compatible way: try to attach extractors
+        val mediaSourceFactory = createMediaSourceFactory(context)
 
         exoPlayer = ExoPlayer.Builder(context)
             .setTrackSelector(trackSelector)
@@ -131,15 +126,40 @@ internal class BetterPlayer(
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
 
-        // Provide the created ExoPlayer and TrackSelector to the subtitle plugin (if present)
-        try {
-            ExoPlayerSubtitlePlugin.instance?.setExoPlayer(exoPlayer!!, trackSelector)
-        } catch (ignored: Exception) {
-            // Ignore if plugin not available at runtime
-        }
         workManager = WorkManager.getInstance(context)
         workerObserverMap = HashMap()
         setupVideoPlayer(eventChannel, textureEntry, result)
+    }
+
+    /**
+     * Create a DefaultMediaSourceFactory and, if possible, configure DefaultExtractorsFactory
+     * with Matroska extractor flags. Use reflection / try-catch to remain compatible with
+     * several media3 versions.
+     */
+    private fun createMediaSourceFactory(context: Context): DefaultMediaSourceFactory {
+        try {
+            val extractorsFactory = DefaultExtractorsFactory()
+            // Try to call setMatroskaExtractorFlags if present (some media3 versions expose it)
+            try {
+                val m = DefaultExtractorsFactory::class.java.getMethod("setMatroskaExtractorFlags", Int::class.javaPrimitiveType)
+                m.invoke(extractorsFactory, 0)
+            } catch (_: Throwable) {
+                // ignore - method not available
+            }
+
+            // Try to find constructor DefaultMediaSourceFactory(Context, ExtractorsFactory)
+            try {
+                val ctor = DefaultMediaSourceFactory::class.java.getConstructor(Context::class.java, DefaultExtractorsFactory::class.java)
+                return ctor.newInstance(context, extractorsFactory)
+            } catch (_: Throwable) {
+                // Fallback to simple ctor
+            }
+        } catch (_: Throwable) {
+            // ignore and fallback
+        }
+
+        // final fallback
+        return DefaultMediaSourceFactory(context)
     }
 
     @OptIn(UnstableApi::class)
@@ -214,20 +234,29 @@ internal class BetterPlayer(
         }
         val mediaSource = buildMediaSource(uri, dataSourceFactory, formatHint, cacheKey, context)
         if (overriddenDuration != 0L) {
-            val clippingMediaSource = ClippingMediaSource.Builder(mediaSource)
-                .setStartPositionMs(0)
-                .setEndPositionMs(overriddenDuration * 1000)
-                .build()
+            val clippingMediaSource = ClippingMediaSource(
+                mediaSource,
+                0,
+                overriddenDuration * 1000
+            )
             exoPlayer?.setMediaSource(clippingMediaSource)
         } else {
             exoPlayer?.setMediaSource(mediaSource)
         }
         exoPlayer?.prepare()
 
-        // Notify subtitle plugin about video path (for embedded subtitle scan)
+        // Try to notify subtitle plugin if available (safe no-op if not)
         try {
-            ExoPlayerSubtitlePlugin.instance?.setVideoPath(dataSource)
-        } catch (_: Exception) {}
+            val pluginClass = Class.forName("com.media.video.music.player.ExoPlayerSubtitlePlugin")
+            val instanceField = pluginClass.getDeclaredField("instance")
+            instanceField.isAccessible = true
+            val instanceObj = instanceField.get(null)
+            val setVideoPath = pluginClass.methods.firstOrNull { it.name == "setVideoPath" }
+            setVideoPath?.invoke(instanceObj, dataSource)
+        } catch (_: Throwable) {
+            // plugin not present or method missing -> ignore
+        }
+
         result.success(null)
     }
 
@@ -872,9 +901,6 @@ internal class BetterPlayer(
         }
     }
 
-    /**
-     * Add external subtitle track to the current media item.
-     */
     fun addExternalSubtitle(
         url: String,
         language: String?,
@@ -894,7 +920,10 @@ internal class BetterPlayer(
                 .setId("external_${System.currentTimeMillis()}")
                 .build()
 
-            val existingSubtitles = mediaItem.subtitleConfigurations.toMutableList()
+            val localCfg = mediaItem.localConfiguration
+            val existingSubtitles =
+                (localCfg?.subtitleConfigurations?.toMutableList()
+                    ?: mutableListOf())
             existingSubtitles.add(subtitleConfiguration)
 
             builder.setSubtitleConfigurations(existingSubtitles)
@@ -979,7 +1008,6 @@ internal class BetterPlayer(
         private const val DEFAULT_NOTIFICATION_CHANNEL = "BETTER_PLAYER_NOTIFICATION"
         private const val NOTIFICATION_ID = 20772077
 
-        //Clear cache without accessing BetterPlayerCache.
         fun clearCache(context: Context?, result: MethodChannel.Result) {
             try {
                 context?.let {
@@ -1007,7 +1035,6 @@ internal class BetterPlayer(
             }
         }
 
-        //Start pre cache of video. Invoke work manager job and start caching in background.
         fun preCache(
             context: Context?, dataSource: String?, preCacheSize: Long,
             maxCacheSize: Long, maxCacheFileSize: Long, headers: Map<String, String?>,
@@ -1036,8 +1063,6 @@ internal class BetterPlayer(
             result.success(null)
         }
 
-        //Stop pre cache of video with given url. If there's no work manager job for given url, then
-        //it will be ignored.
         fun stopPreCache(context: Context?, url: String?, result: MethodChannel.Result) {
             if (url != null && context != null) {
                 WorkManager.getInstance(context).cancelAllWorkByTag(url)
@@ -1045,5 +1070,4 @@ internal class BetterPlayer(
             result.success(null)
         }
     }
-
 }
